@@ -21,6 +21,8 @@ import com.wynncraft.algorithms.StarvingGoblinAlgorithm;
 import com.wynncraft.algorithms.StarvingPlayer;
 import com.wynncraft.algorithms.WynnFrumaAlgorithm;
 import com.wynncraft.algorithms.WynnSolverAlgorithm;
+import com.wynncraft.algorithms.CascadeSentinelAlgorithm;
+import com.wynncraft.algorithms.CascadeSentinelPlayer;
 import com.wynncraft.core.WynnPlayer;
 import com.wynncraft.core.interfaces.IAlgorithm;
 import com.wynncraft.core.interfaces.IPlayerBuilder;
@@ -56,6 +58,7 @@ public class AlgorithmRegistry {
         register(new PrunedMaskAlgorithm(), WynnPlayer.Builder::new);
         register(new PrunedMaskV2Algorithm(), WynnPlayer.Builder::new);
         register(new StarvingGoblinAlgorithm(), StarvingPlayer.Builder::new);
+        register(new CascadeSentinelAlgorithm(), CascadeSentinelPlayer.Builder::new);
     }
 
     /**
