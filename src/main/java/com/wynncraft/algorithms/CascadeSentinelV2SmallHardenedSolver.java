@@ -15,9 +15,10 @@ import java.util.List;
  * sets using sound reachability reductions and admissible exact-search bounds.
  * It has no cross-run result cache.</p>
  */
-final class CascadeSentinelHardenedSolver implements IAlgorithm<CascadeSentinelPlayer> {
+final class CascadeSentinelV2SmallHardenedSolver implements IAlgorithm<CascadeSentinelV2Player> {
     private static final int NO_NEED = Integer.MIN_VALUE;
-    private static final int MAX_DIRECT_ITEMS = 24;
+    private static final int MAX_DIRECT_ITEMS = 25;
+    private static final long MAX_SYMMETRY_REDUCED_STATES = 1_000_000L;
 
     private int[] originalIndex;
     private int[] r0,r1,r2,r3,r4;
@@ -32,7 +33,7 @@ final class CascadeSentinelHardenedSolver implements IAlgorithm<CascadeSentinelP
     private int[] visitedGen = new int[256];
     private int visitedEpoch = 1, visitedSize;
 
-    private int k, itemCount, baseCount, baseScore, totalWeight;
+    private int k, itemCount, baseCount, baseScore;
     private long forcedOriginalMask, bestOriginalMask, fullSearchMask, allowedSearchMask;
     private int bestCount, bestScore;
     private int bestB0,bestB1,bestB2,bestB3,bestB4;
@@ -40,20 +41,22 @@ final class CascadeSentinelHardenedSolver implements IAlgorithm<CascadeSentinelP
     private boolean anyNegative;
 
     @Override
-    public Result run(CascadeSentinelPlayer player) {
+    public Result run(CascadeSentinelV2Player player) {
         final List<IEquipment> equipment = player;
         itemCount = player.itemCount;
         if (itemCount > 64) return fallback(player);
-        CascadeSentinelPlayer.Data d = player.data;
-        originalIndex=d.originalIndex; r0=d.r0;r1=d.r1;r2=d.r2;r3=d.r3;r4=d.r4;
-        b0=d.b0;b1=d.b1;b2=d.b2;b3=d.b3;b4=d.b4;
-        p0=d.p0;p1=d.p1;p2=d.p2;p3=d.p3;p4=d.p4; itemWeight=d.weight;
-        alloc0=player.allocated[0]; alloc1=player.allocated[1]; alloc2=player.allocated[2]; alloc3=player.allocated[3]; alloc4=player.allocated[4];
-        baseCount=player.freeCount; baseScore=player.freeScore; totalWeight=player.totalWeight;
+        CascadeSentinelV2Player.Data d = player.data;
+        CascadeSentinelV2Player.HardenedData h = d.hardened;
+        originalIndex=d.originalIndex; r0=h.r0;r1=h.r1;r2=h.r2;r3=h.r3;r4=h.r4;
+        b0=h.b0;b1=h.b1;b2=h.b2;b3=h.b3;b4=h.b4;
+        p0=h.p0;p1=h.p1;p2=h.p2;p3=h.p3;p4=h.p4; itemWeight=d.weight;
+        alloc0=player.alloc0; alloc1=player.alloc1; alloc2=player.alloc2; alloc3=player.alloc3; alloc4=player.alloc4;
+        CascadeSentinelV2Player.HardenedSnapshot snapshot = player.hardenedSnapshot;
+        baseCount=snapshot.freeCount; baseScore=snapshot.freeScore;
         forcedOriginalMask=player.freeOriginalMask; k=player.candidateCount; anyNegative=player.anyNegative;
-        int s0=alloc0+player.free0, s1=alloc1+player.free1, s2=alloc2+player.free2, s3=alloc3+player.free3, s4=alloc4+player.free4;
+        int s0=alloc0+snapshot.free0, s1=alloc1+snapshot.free1, s2=alloc2+snapshot.free2, s3=alloc3+snapshot.free3, s4=alloc4+snapshot.free4;
 
-        if(k>MAX_DIRECT_ITEMS) return fallback(player);
+        if(k>MAX_DIRECT_ITEMS && !symmetryReducedDirectSafe()) return fallback(player);
         fullSearchMask = k==64?-1L:(1L<<k)-1L;
         allowedSearchMask = fullSearchMask;
         setBest(0L,0,baseScore,s0,s1,s2,s3,s4);
@@ -100,7 +103,7 @@ final class CascadeSentinelHardenedSolver implements IAlgorithm<CascadeSentinelP
 
     }
 
-    private Result finish(CascadeSentinelPlayer player, List<IEquipment> equipment) {
+    private Result finish(CascadeSentinelV2Player player, List<IEquipment> equipment) {
         player.setBonus(bestB0,bestB1,bestB2,bestB3,bestB4);
         return result(equipment);
     }
@@ -259,6 +262,31 @@ final class CascadeSentinelHardenedSolver implements IAlgorithm<CascadeSentinelP
                 &&b0[i]==b0[j]&&b1[i]==b1[j]&&b2[i]==b2[j]&&b3[i]==b3[j]&&b4[i]==b4[j];
     }
 
+    /**
+     * Above the normal direct-search ceiling, only stay on the hardened mask
+     * engine when equivalent-item symmetry gives a conservative small upper
+     * bound on the number of distinct subset states. This prevents the legacy
+     * permutation fallback from exploding on large groups of identical items
+     * without exposing arbitrary high-cardinality unique inputs to a huge
+     * 2^k state table.
+     */
+    private boolean symmetryReducedDirectSafe(){
+        long states = 1L;
+        for(int i=0;i<k;i++){
+            boolean leader = true;
+            for(int j=0;j<i;j++){
+                if(sameProfile(i,j)){ leader=false; break; }
+            }
+            if(!leader) continue;
+            int group = 1;
+            for(int j=i+1;j<k;j++) if(sameProfile(i,j)) group++;
+            long factor = (long)group + 1L;
+            if(states > MAX_SYMMETRY_REDUCED_STATES / factor) return false;
+            states *= factor;
+        }
+        return states <= MAX_SYMMETRY_REDUCED_STATES;
+    }
+
     private long optimisticRemainingMask(long remaining,int s0,int s1,int s2,int s3,int s4){
         long reached=0L;
         boolean progress;
@@ -325,13 +353,13 @@ final class CascadeSentinelHardenedSolver implements IAlgorithm<CascadeSentinelP
         return new Result(new MaskList(equipment,bestOriginalMask,bestCount),new MaskList(equipment,all&~bestOriginalMask,itemCount-bestCount));
     }
 
-    private Result fallback(CascadeSentinelPlayer player){
+    private Result fallback(CascadeSentinelV2Player player){
         // Rare exact fallback for unusually large inputs. Keep this self-contained
         // instead of delegating to another bounty entry: correctness (including
         // the tie-break) must not depend on a different algorithm's pruning.
         final int n=player.itemCount;
         IEquipment[] items=Arrays.copyOf(player.data.items,n);
-        int[] sp={player.allocated[0],player.allocated[1],player.allocated[2],player.allocated[3],player.allocated[4]};
+        int[] sp={player.alloc0,player.alloc1,player.alloc2,player.alloc3,player.alloc4};
         boolean[] active=new boolean[n], best=new boolean[n];
         int count=0,score=0,remaining=0;
         for(int i=0;i<n;i++){

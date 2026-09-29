@@ -16,7 +16,7 @@ import java.util.List;
  * are snapshots of the current equipment prefix; later builder appends do not
  * mutate an existing player. This is preprocessing, not a cross-run result cache.
  */
-public final class CascadeSentinelPlayer extends AbstractList<IEquipment> implements IPlayer {
+public final class CascadeSentinelV2Player extends AbstractList<IEquipment> implements IPlayer {
     static final int NO_NEED = Integer.MIN_VALUE;
     static final int PACK_BIAS = 1024;
     static final long PACK_BIAS_5 = 0x0400_4004_0040_0400L;
@@ -24,44 +24,35 @@ public final class CascadeSentinelPlayer extends AbstractList<IEquipment> implem
     final Data data;
     final int itemCount;
     final int candidateCount;
-    final int freeCount;
-    final int freeScore;
-    final int free0, free1, free2, free3, free4;
-    final int totalWeight;
+    final HardenedSnapshot hardenedSnapshot;
     final long freeOriginalMask;
     final boolean anyNegative;
     final boolean packedSafe;
     final boolean denseNineRisk;
     final long basePacked;
-    final int[] allocated;
+    final int alloc0, alloc1, alloc2, alloc3, alloc4;
 
     private int bonus0, bonus1, bonus2, bonus3, bonus4;
     private int weight;
 
-    private CascadeSentinelPlayer(
+    private CascadeSentinelV2Player(
             Data data,
             int itemCount,
             int candidateCount,
-            int freeCount,
-            int freeScore,
-            int free0, int free1, int free2, int free3, int free4,
-            int totalWeight,
+            HardenedSnapshot hardenedSnapshot,
             long freeOriginalMask,
             boolean anyNegative, boolean packedSafe, boolean denseNineRisk, long basePacked,
             int a0, int a1, int a2, int a3, int a4) {
         this.data = data;
         this.itemCount = itemCount;
         this.candidateCount = candidateCount;
-        this.freeCount = freeCount;
-        this.freeScore = freeScore;
-        this.free0 = free0; this.free1 = free1; this.free2 = free2; this.free3 = free3; this.free4 = free4;
-        this.totalWeight = totalWeight;
+        this.hardenedSnapshot = hardenedSnapshot;
         this.freeOriginalMask = freeOriginalMask;
         this.anyNegative = anyNegative;
         this.packedSafe = packedSafe;
         this.denseNineRisk = denseNineRisk;
         this.basePacked = basePacked;
-        this.allocated = new int[] { a0, a1, a2, a3, a4 };
+        this.alloc0 = a0; this.alloc1 = a1; this.alloc2 = a2; this.alloc3 = a3; this.alloc4 = a4;
     }
 
     @Override public IEquipment get(int index) {
@@ -72,12 +63,23 @@ public final class CascadeSentinelPlayer extends AbstractList<IEquipment> implem
     @Override public List<IEquipment> equipment() { return this; }
     @Override public int weight() { return weight; }
     @Override public int total(SkillPoint skill) {
-        int i = skill.ordinal();
-        return allocated[i] + switch (i) {
-            case 0 -> bonus0; case 1 -> bonus1; case 2 -> bonus2; case 3 -> bonus3; default -> bonus4;
+        return switch (skill) {
+            case STRENGTH -> alloc0 + bonus0;
+            case DEXTERITY -> alloc1 + bonus1;
+            case INTELLIGENCE -> alloc2 + bonus2;
+            case DEFENCE -> alloc3 + bonus3;
+            case AGILITY -> alloc4 + bonus4;
         };
     }
-    @Override public int allocated(SkillPoint skill) { return allocated[skill.ordinal()]; }
+    @Override public int allocated(SkillPoint skill) {
+        return switch (skill) {
+            case STRENGTH -> alloc0;
+            case DEXTERITY -> alloc1;
+            case INTELLIGENCE -> alloc2;
+            case DEFENCE -> alloc3;
+            case AGILITY -> alloc4;
+        };
+    }
     @Override public void modify(int[] sp, boolean sum) {
         int sign = sum ? 1 : -1;
         bonus0 += sign * sp[0]; bonus1 += sign * sp[1]; bonus2 += sign * sp[2]; bonus3 += sign * sp[3]; bonus4 += sign * sp[4];
@@ -89,11 +91,11 @@ public final class CascadeSentinelPlayer extends AbstractList<IEquipment> implem
         weight=b0+b1+b2+b3+b4;
     }
     void setPackedTotal(long packedTotal) {
-        bonus0 = lane(packedTotal, 0) - allocated[0];
-        bonus1 = lane(packedTotal, 12) - allocated[1];
-        bonus2 = lane(packedTotal, 24) - allocated[2];
-        bonus3 = lane(packedTotal, 36) - allocated[3];
-        bonus4 = lane(packedTotal, 48) - allocated[4];
+        bonus0 = lane(packedTotal, 0) - alloc0;
+        bonus1 = lane(packedTotal, 12) - alloc1;
+        bonus2 = lane(packedTotal, 24) - alloc2;
+        bonus3 = lane(packedTotal, 36) - alloc3;
+        bonus4 = lane(packedTotal, 48) - alloc4;
         weight = bonus0 + bonus1 + bonus2 + bonus3 + bonus4;
     }
     static long pack5(int a,int b,int c,int d,int e) {
@@ -107,14 +109,54 @@ public final class CascadeSentinelPlayer extends AbstractList<IEquipment> implem
         return (int)((packed >>> shift) & 0xFFFL) - PACK_BIAS;
     }
 
+    /**
+     * Snapshot-local inputs used only after dispatch has selected a hardened solver.
+     * Common packed snapshots leave this null; it is created by build(), never run().
+     */
+    static final class HardenedSnapshot {
+        final int freeCount, freeScore;
+        final int free0, free1, free2, free3, free4;
+
+        HardenedSnapshot(int freeCount, int freeScore, int free0, int free1, int free2, int free3, int free4) {
+            this.freeCount = freeCount;
+            this.freeScore = freeScore;
+            this.free0 = free0; this.free1 = free1; this.free2 = free2; this.free3 = free3; this.free4 = free4;
+        }
+    }
+
+    static final class HardenedData {
+        int[] r0, r1, r2, r3, r4;
+        int[] b0, b1, b2, b3, b4;
+        int[] p0, p1, p2, p3, p4;
+
+        HardenedData(int capacity) {
+            r0=new int[capacity];r1=new int[capacity];r2=new int[capacity];r3=new int[capacity];r4=new int[capacity];
+            b0=new int[capacity];b1=new int[capacity];b2=new int[capacity];b3=new int[capacity];b4=new int[capacity];
+            p0=new int[capacity];p1=new int[capacity];p2=new int[capacity];p3=new int[capacity];p4=new int[capacity];
+        }
+
+        void ensureCapacity(int n) {
+            if (n <= r0.length) return;
+            int c = Math.max(n, r0.length << 1);
+            r0=Arrays.copyOf(r0,c);r1=Arrays.copyOf(r1,c);r2=Arrays.copyOf(r2,c);r3=Arrays.copyOf(r3,c);r4=Arrays.copyOf(r4,c);
+            b0=Arrays.copyOf(b0,c);b1=Arrays.copyOf(b1,c);b2=Arrays.copyOf(b2,c);b3=Arrays.copyOf(b3,c);b4=Arrays.copyOf(b4,c);
+            p0=Arrays.copyOf(p0,c);p1=Arrays.copyOf(p1,c);p2=Arrays.copyOf(p2,c);p3=Arrays.copyOf(p3,c);p4=Arrays.copyOf(p4,c);
+        }
+
+        void set(int i, int q0,int q1,int q2,int q3,int q4, int x0,int x1,int x2,int x3,int x4) {
+            r0[i]=q0;r1[i]=q1;r2[i]=q2;r3[i]=q3;r4[i]=q4;
+            b0[i]=x0;b1[i]=x1;b2[i]=x2;b3[i]=x3;b4[i]=x4;
+            p0[i]=q0>0?q0+x0:NO_NEED;p1[i]=q1>0?q1+x1:NO_NEED;
+            p2[i]=q2>0?q2+x2:NO_NEED;p3[i]=q3>0?q3+x3:NO_NEED;p4[i]=q4>0?q4+x4:NO_NEED;
+        }
+    }
+
     static final class Data {
         IEquipment[] items = new IEquipment[32];
-        int[] originalIndex = new int[32];
-        int[] r0 = new int[32], r1 = new int[32], r2 = new int[32], r3 = new int[32], r4 = new int[32];
-        int[] b0 = new int[32], b1 = new int[32], b2 = new int[32], b3 = new int[32], b4 = new int[32];
-        int[] p0 = new int[32], p1 = new int[32], p2 = new int[32], p3 = new int[32], p4 = new int[32];
-        int[] weight = new int[32];
-        long[] packedReq = new long[32], packedBonus = new long[32], packedNeed = new long[32];
+        int[] originalIndex = new int[9];
+        int[] weight = new int[9];
+        long[] packedReq = new long[9], packedBonus = new long[9], packedNeed = new long[9];
+        HardenedData hardened;
 
         void ensureItemCapacity(int n) {
             if (n <= items.length) return;
@@ -124,17 +166,28 @@ public final class CascadeSentinelPlayer extends AbstractList<IEquipment> implem
             if (n <= originalIndex.length) return;
             int c = Math.max(n, originalIndex.length << 1);
             originalIndex=Arrays.copyOf(originalIndex,c);
-            r0=Arrays.copyOf(r0,c);r1=Arrays.copyOf(r1,c);r2=Arrays.copyOf(r2,c);r3=Arrays.copyOf(r3,c);r4=Arrays.copyOf(r4,c);
-            b0=Arrays.copyOf(b0,c);b1=Arrays.copyOf(b1,c);b2=Arrays.copyOf(b2,c);b3=Arrays.copyOf(b3,c);b4=Arrays.copyOf(b4,c);
-            p0=Arrays.copyOf(p0,c);p1=Arrays.copyOf(p1,c);p2=Arrays.copyOf(p2,c);p3=Arrays.copyOf(p3,c);p4=Arrays.copyOf(p4,c);
             weight=Arrays.copyOf(weight,c);
             packedReq=Arrays.copyOf(packedReq,c); packedBonus=Arrays.copyOf(packedBonus,c); packedNeed=Arrays.copyOf(packedNeed,c);
+            if (hardened != null) hardened.ensureCapacity(c);
+        }
+        void ensureHardenedData(int candidateCount) {
+            if (hardened != null) {
+                hardened.ensureCapacity(candidateCount);
+                return;
+            }
+            hardened = new HardenedData(originalIndex.length);
+            for (int i = 0; i < candidateCount; i++) {
+                IEquipment item = items[originalIndex[i]];
+                int[] req = item.requirements();
+                int[] bon = item.bonuses();
+                hardened.set(i, req[0],req[1],req[2],req[3],req[4], bon[0],bon[1],bon[2],bon[3],bon[4]);
+            }
         }
     }
 
-    public static final class Builder implements IPlayerBuilder<CascadeSentinelPlayer> {
+    public static final class Builder implements IPlayerBuilder<CascadeSentinelV2Player> {
         private final Data data = new Data();
-        private int itemCount, candidateCount, freeCount, freeScore, totalWeight;
+        private int itemCount, candidateCount, freeCount, freeScore;
         private int free0, free1, free2, free3, free4;
         private long freeMask;
         private boolean anyNegative;
@@ -142,7 +195,7 @@ public final class CascadeSentinelPlayer extends AbstractList<IEquipment> implem
         private int neg0,neg1,neg2,neg3,neg4,pos0,pos1,pos2,pos3,pos4;
         private boolean packedValuesSafe = true;
 
-        @Override public IPlayerBuilder<CascadeSentinelPlayer> equipment(IEquipment... additions) {
+        @Override public IPlayerBuilder<CascadeSentinelV2Player> equipment(IEquipment... additions) {
             for (IEquipment item : additions) {
                 data.ensureItemCapacity(itemCount + 1);
                 data.items[itemCount] = item;
@@ -151,7 +204,6 @@ public final class CascadeSentinelPlayer extends AbstractList<IEquipment> implem
                 int q0=req[0],q1=req[1],q2=req[2],q3=req[3],q4=req[4];
                 int x0=bon[0],x1=bon[1],x2=bon[2],x3=bon[3],x4=bon[4];
                 int w=x0+x1+x2+x3+x4;
-                totalWeight += w;
                 boolean hasReq=q0>0||q1>0||q2>0||q3>0||q4>0;
                 boolean hasNeg=x0<0||x1<0||x2<0||x3<0||x4<0;
                 if (!hasReq && !hasNeg) {
@@ -162,16 +214,19 @@ public final class CascadeSentinelPlayer extends AbstractList<IEquipment> implem
                     data.ensureCandidateCapacity(candidateCount + 1);
                     int j=candidateCount++;
                     data.originalIndex[j]=itemCount;
-                    data.r0[j]=q0;data.r1[j]=q1;data.r2[j]=q2;data.r3[j]=q3;data.r4[j]=q4;
-                    data.b0[j]=x0;data.b1[j]=x1;data.b2[j]=x2;data.b3[j]=x3;data.b4[j]=x4;
-                    data.p0[j]=q0>0?q0+x0:NO_NEED; data.p1[j]=q1>0?q1+x1:NO_NEED;
-                    data.p2[j]=q2>0?q2+x2:NO_NEED; data.p3[j]=q3>0?q3+x3:NO_NEED; data.p4[j]=q4>0?q4+x4:NO_NEED;
                     data.weight[j]=w;
                     data.packedReq[j]=packRequirements(q0,q1,q2,q3,q4);
                     data.packedBonus[j]=pack5(x0,x1,x2,x3,x4);
                     data.packedNeed[j]=packNeeds(q0,q1,q2,q3,q4,x0,x1,x2,x3,x4);
-                    packedValuesSafe &= inPackRange(x0)&&inPackRange(x1)&&inPackRange(x2)&&inPackRange(x3)&&inPackRange(x4);
-                    packedValuesSafe &= needPackable(q0,x0)&&needPackable(q1,x1)&&needPackable(q2,x2)&&needPackable(q3,x3)&&needPackable(q4,x4);
+                    boolean candidatePackable = inPackRange(x0)&&inPackRange(x1)&&inPackRange(x2)&&inPackRange(x3)&&inPackRange(x4)
+                            && needPackable(q0,x0)&&needPackable(q1,x1)&&needPackable(q2,x2)&&needPackable(q3,x3)&&needPackable(q4,x4);
+                    packedValuesSafe &= candidatePackable;
+                    if (data.hardened != null) {
+                        data.hardened.set(j,q0,q1,q2,q3,q4,x0,x1,x2,x3,x4);
+                    } else if (!packedValuesSafe || candidateCount > 9) {
+                        // Prepare the exact scalar sidecar during builder work, never lazily in run().
+                        data.ensureHardenedData(candidateCount);
+                    }
                     neg0+=Math.min(0,x0);neg1+=Math.min(0,x1);neg2+=Math.min(0,x2);neg3+=Math.min(0,x3);neg4+=Math.min(0,x4);
                     pos0+=Math.max(0,x0);pos1+=Math.max(0,x1);pos2+=Math.max(0,x2);pos3+=Math.max(0,x3);pos4+=Math.max(0,x4);
                     anyNegative |= hasNeg;
@@ -180,39 +235,62 @@ public final class CascadeSentinelPlayer extends AbstractList<IEquipment> implem
             }
             return this;
         }
-        @Override public IPlayerBuilder<CascadeSentinelPlayer> allocate(SkillPoint point, int amount) {
+        @Override public IPlayerBuilder<CascadeSentinelV2Player> allocate(SkillPoint point, int amount) {
             switch (point) {
                 case STRENGTH -> a0=amount; case DEXTERITY -> a1=amount; case INTELLIGENCE -> a2=amount;
                 case DEFENCE -> a3=amount; case AGILITY -> a4=amount;
             }
             return this;
         }
-        @Override public CascadeSentinelPlayer build() {
+        @Override public CascadeSentinelV2Player build() {
             int base0=a0+free0,base1=a1+free1,base2=a2+free2,base3=a3+free3,base4=a4+free4;
             boolean safe=packedValuesSafe
                 && rangeSafe(base0,neg0,pos0)&&rangeSafe(base1,neg1,pos1)&&rangeSafe(base2,neg2,pos2)
                 && rangeSafe(base3,neg3,pos3)&&rangeSafe(base4,neg4,pos4);
+            if (!safe) {
+                // The algorithm will route this snapshot to the hardened solver.
+                // Materialize its scalar inputs here, while build() is already doing preprocessing.
+                data.ensureHardenedData(candidateCount);
+            }
             long packedBase = safe ? pack5(base0,base1,base2,base3,base4) : 0L;
             boolean denseNineRisk = false;
             if (candidateCount == 9 && anyNegative) {
                 boolean allInitial = true;
                 int sum0=0,sum1=0,sum2=0,sum3=0,sum4=0;
-                int need0=Integer.MIN_VALUE,need1=Integer.MIN_VALUE,need2=Integer.MIN_VALUE,need3=Integer.MIN_VALUE,need4=Integer.MIN_VALUE;
+                int need0=NO_NEED,need1=NO_NEED,need2=NO_NEED,need3=NO_NEED,need4=NO_NEED;
+                HardenedData h = data.hardened;
                 for(int i=0;i<9;i++){
-                    if((data.r0[i]>0&&base0<data.r0[i])||(data.r1[i]>0&&base1<data.r1[i])||(data.r2[i]>0&&base2<data.r2[i])
-                            ||(data.r3[i]>0&&base3<data.r3[i])||(data.r4[i]>0&&base4<data.r4[i])) allInitial=false;
-                    sum0+=data.b0[i];sum1+=data.b1[i];sum2+=data.b2[i];sum3+=data.b3[i];sum4+=data.b4[i];
-                    if(data.p0[i]>need0)need0=data.p0[i];if(data.p1[i]>need1)need1=data.p1[i];if(data.p2[i]>need2)need2=data.p2[i];
-                    if(data.p3[i]>need3)need3=data.p3[i];if(data.p4[i]>need4)need4=data.p4[i];
+                    int q0,q1,q2,q3,q4,x0,x1,x2,x3,x4,p0,p1,p2,p3,p4;
+                    if (h != null) {
+                        q0=h.r0[i];q1=h.r1[i];q2=h.r2[i];q3=h.r3[i];q4=h.r4[i];
+                        x0=h.b0[i];x1=h.b1[i];x2=h.b2[i];x3=h.b3[i];x4=h.b4[i];
+                        p0=h.p0[i];p1=h.p1[i];p2=h.p2[i];p3=h.p3[i];p4=h.p4[i];
+                    } else {
+                        IEquipment item = data.items[data.originalIndex[i]];
+                        int[] req = item.requirements(); int[] bon = item.bonuses();
+                        q0=req[0];q1=req[1];q2=req[2];q3=req[3];q4=req[4];
+                        x0=bon[0];x1=bon[1];x2=bon[2];x3=bon[3];x4=bon[4];
+                        p0=q0>0?q0+x0:NO_NEED;p1=q1>0?q1+x1:NO_NEED;p2=q2>0?q2+x2:NO_NEED;
+                        p3=q3>0?q3+x3:NO_NEED;p4=q4>0?q4+x4:NO_NEED;
+                    }
+                    if((q0>0&&base0<q0)||(q1>0&&base1<q1)||(q2>0&&base2<q2)||(q3>0&&base3<q3)||(q4>0&&base4<q4)) allInitial=false;
+                    sum0+=x0;sum1+=x1;sum2+=x2;sum3+=x3;sum4+=x4;
+                    if(p0>need0)need0=p0;if(p1>need1)need1=p1;if(p2>need2)need2=p2;if(p3>need3)need3=p3;if(p4>need4)need4=p4;
                 }
                 if(allInitial){
                     int final0=base0+sum0,final1=base1+sum1,final2=base2+sum2,final3=base3+sum3,final4=base4+sum4;
                     denseNineRisk=(need0!=NO_NEED&&final0<need0)||(need1!=NO_NEED&&final1<need1)||(need2!=NO_NEED&&final2<need2)
                             ||(need3!=NO_NEED&&final3<need3)||(need4!=NO_NEED&&final4<need4);
                 }
+                if (denseNineRisk) data.ensureHardenedData(candidateCount);
             }
-            return new CascadeSentinelPlayer(data,itemCount,candidateCount,freeCount,freeScore,
-                    free0,free1,free2,free3,free4,totalWeight,freeMask,anyNegative,safe,denseNineRisk,packedBase,a0,a1,a2,a3,a4);
+            HardenedSnapshot snapshotHardened = null;
+            if (itemCount <= 64 && (candidateCount > 9 || !safe || denseNineRisk)) {
+                snapshotHardened = new HardenedSnapshot(
+                        freeCount, freeScore, free0, free1, free2, free3, free4);
+            }
+            return new CascadeSentinelV2Player(data,itemCount,candidateCount,snapshotHardened,
+                    freeMask,anyNegative,safe,denseNineRisk,packedBase,a0,a1,a2,a3,a4);
         }
         private static boolean inPackRange(int v){return v>=-PACK_BIAS && v<PACK_BIAS;}
         private static boolean needPackable(int r,int b){return r<=0 || (inPackRange(r)&&inPackRange(r+b));}
