@@ -9,13 +9,14 @@ import java.util.Collections;
 import java.util.List;
 
 /**
- * Internal exact fallback for Cascade Sentinel.
+ * Exact scalar fallback for Cascade Sentinel snapshots that remain inside the
+ * <=64-item / <=9-candidate fast domain but require hardened handling because
+ * packed arithmetic is unsafe or the dense-nine guard is active.
  *
- * <p>This path handles large, numerically unsafe, or unusually dense candidate
- * sets using sound reachability reductions and admissible exact-search bounds.
- * It has no cross-run result cache.</p>
+ * <p>Uses sound reachability reductions and admissible exact-search bounds. It
+ * has no cross-run result cache.</p>
  */
-final class CascadeSentinelV2SmallHardenedSolver implements IAlgorithm<CascadeSentinelV2Player> {
+final class CascadeSentinelV3SmallHardenedSolver implements IAlgorithm<CascadeSentinelV3Player> {
     private static final int NO_NEED = Integer.MIN_VALUE;
     private static final int MAX_DIRECT_ITEMS = 25;
     private static final long MAX_SYMMETRY_REDUCED_STATES = 1_000_000L;
@@ -41,19 +42,19 @@ final class CascadeSentinelV2SmallHardenedSolver implements IAlgorithm<CascadeSe
     private boolean anyNegative;
 
     @Override
-    public Result run(CascadeSentinelV2Player player) {
+    public Result run(CascadeSentinelV3Player player) {
         final List<IEquipment> equipment = player;
         itemCount = player.itemCount;
         if (itemCount > 64) return fallback(player);
-        CascadeSentinelV2Player.Data d = player.data;
-        CascadeSentinelV2Player.HardenedData h = d.hardened;
+        CascadeSentinelV3Player.Data d = player.data;
+        CascadeSentinelV3Player.HardenedData h = d.hardened;
         originalIndex=d.originalIndex; r0=h.r0;r1=h.r1;r2=h.r2;r3=h.r3;r4=h.r4;
         b0=h.b0;b1=h.b1;b2=h.b2;b3=h.b3;b4=h.b4;
         p0=h.p0;p1=h.p1;p2=h.p2;p3=h.p3;p4=h.p4; itemWeight=d.weight;
         alloc0=player.alloc0; alloc1=player.alloc1; alloc2=player.alloc2; alloc3=player.alloc3; alloc4=player.alloc4;
-        CascadeSentinelV2Player.HardenedSnapshot snapshot = player.hardenedSnapshot;
+        CascadeSentinelV3Player.HardenedSnapshot snapshot = player.hardenedSnapshot;
         baseCount=snapshot.freeCount; baseScore=snapshot.freeScore;
-        forcedOriginalMask=player.freeOriginalMask; k=player.candidateCount; anyNegative=player.anyNegative;
+        forcedOriginalMask=player.freeOriginalMask; k=player.candidateCount(); anyNegative=player.anyNegative();
         int s0=alloc0+snapshot.free0, s1=alloc1+snapshot.free1, s2=alloc2+snapshot.free2, s3=alloc3+snapshot.free3, s4=alloc4+snapshot.free4;
 
         if(k>MAX_DIRECT_ITEMS && !symmetryReducedDirectSafe()) return fallback(player);
@@ -103,7 +104,7 @@ final class CascadeSentinelV2SmallHardenedSolver implements IAlgorithm<CascadeSe
 
     }
 
-    private Result finish(CascadeSentinelV2Player player, List<IEquipment> equipment) {
+    private Result finish(CascadeSentinelV3Player player, List<IEquipment> equipment) {
         player.setBonus(bestB0,bestB1,bestB2,bestB3,bestB4);
         return result(equipment);
     }
@@ -232,7 +233,7 @@ final class CascadeSentinelV2SmallHardenedSolver implements IAlgorithm<CascadeSe
     private int topWeightSum(long mask,int count){
         if(count<=0)return 0;
         int sum=0;
-        // n<=24 on the direct path; repeated max selection is tiny and allocation-free.
+        // The bounded direct-search path is small; repeated max selection is allocation-free.
         long left=mask;
         for(int q=0;q<count && left!=0L;q++){
             int best=-1,bw=Integer.MIN_VALUE;long c=left;
@@ -353,7 +354,7 @@ final class CascadeSentinelV2SmallHardenedSolver implements IAlgorithm<CascadeSe
         return new Result(new MaskList(equipment,bestOriginalMask,bestCount),new MaskList(equipment,all&~bestOriginalMask,itemCount-bestCount));
     }
 
-    private Result fallback(CascadeSentinelV2Player player){
+    private Result fallback(CascadeSentinelV3Player player){
         // Rare exact fallback for unusually large inputs. Keep this self-contained
         // instead of delegating to another bounty entry: correctness (including
         // the tie-break) must not depend on a different algorithm's pruning.

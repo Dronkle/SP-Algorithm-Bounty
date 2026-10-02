@@ -12,47 +12,51 @@ import java.util.List;
 /**
  * Preprocessed player representation for Cascade Sentinel.
  *
- * Immutable equipment metadata is extracted once by the builder. Built players
- * are snapshots of the current equipment prefix; later builder appends do not
- * mutate an existing player. This is preprocessing, not a cross-run result cache.
+ * Immutable equipment metadata is extracted once by the builder. A built player
+ * snapshots one logical equipment prefix. Shared Data is append-only, so later
+ * builder appends may extend it but cannot change the prefix state captured by an
+ * existing player. This is preprocessing, not a cross-run result cache.
  */
-public final class CascadeSentinelV2Player extends AbstractList<IEquipment> implements IPlayer {
+public final class CascadeSentinelV3Player extends AbstractList<IEquipment> implements IPlayer {
     static final int NO_NEED = Integer.MIN_VALUE;
     static final int PACK_BIAS = 1024;
     static final long PACK_BIAS_5 = 0x0400_4004_0040_0400L;
 
     final Data data;
     final int itemCount;
-    final int candidateCount;
+    // candidateMeta stores the candidate count directly when no candidate has a
+    // negative bonus, or bitwise-complemented when at least one candidate does.
+    // This folds snapshot-level anyNegative into the same int.
+    final int candidateMeta;
     final HardenedSnapshot hardenedSnapshot;
     final long freeOriginalMask;
-    final boolean anyNegative;
-    final boolean packedSafe;
-    final boolean denseNineRisk;
     final long basePacked;
     final int alloc0, alloc1, alloc2, alloc3, alloc4;
 
     private int bonus0, bonus1, bonus2, bonus3, bonus4;
-    private int weight;
 
-    private CascadeSentinelV2Player(
+    private CascadeSentinelV3Player(
             Data data,
             int itemCount,
             int candidateCount,
             HardenedSnapshot hardenedSnapshot,
             long freeOriginalMask,
-            boolean anyNegative, boolean packedSafe, boolean denseNineRisk, long basePacked,
+            boolean anyNegative, long basePacked,
             int a0, int a1, int a2, int a3, int a4) {
         this.data = data;
         this.itemCount = itemCount;
-        this.candidateCount = candidateCount;
+        this.candidateMeta = anyNegative ? ~candidateCount : candidateCount;
         this.hardenedSnapshot = hardenedSnapshot;
         this.freeOriginalMask = freeOriginalMask;
-        this.anyNegative = anyNegative;
-        this.packedSafe = packedSafe;
-        this.denseNineRisk = denseNineRisk;
         this.basePacked = basePacked;
         this.alloc0 = a0; this.alloc1 = a1; this.alloc2 = a2; this.alloc3 = a3; this.alloc4 = a4;
+    }
+
+    int candidateCount() {
+        return candidateMeta < 0 ? ~candidateMeta : candidateMeta;
+    }
+    boolean anyNegative() {
+        return candidateMeta < 0;
     }
 
     @Override public IEquipment get(int index) {
@@ -61,7 +65,7 @@ public final class CascadeSentinelV2Player extends AbstractList<IEquipment> impl
     }
     @Override public int size() { return itemCount; }
     @Override public List<IEquipment> equipment() { return this; }
-    @Override public int weight() { return weight; }
+    @Override public int weight() { return bonus0 + bonus1 + bonus2 + bonus3 + bonus4; }
     @Override public int total(SkillPoint skill) {
         return switch (skill) {
             case STRENGTH -> alloc0 + bonus0;
@@ -83,12 +87,10 @@ public final class CascadeSentinelV2Player extends AbstractList<IEquipment> impl
     @Override public void modify(int[] sp, boolean sum) {
         int sign = sum ? 1 : -1;
         bonus0 += sign * sp[0]; bonus1 += sign * sp[1]; bonus2 += sign * sp[2]; bonus3 += sign * sp[3]; bonus4 += sign * sp[4];
-        weight = bonus0 + bonus1 + bonus2 + bonus3 + bonus4;
     }
-    @Override public void reset() { bonus0=bonus1=bonus2=bonus3=bonus4=weight=0; }
+    @Override public void reset() { bonus0=bonus1=bonus2=bonus3=bonus4=0; }
     void setBonus(int b0, int b1, int b2, int b3, int b4) {
         bonus0=b0; bonus1=b1; bonus2=b2; bonus3=b3; bonus4=b4;
-        weight=b0+b1+b2+b3+b4;
     }
     void setPackedTotal(long packedTotal) {
         bonus0 = lane(packedTotal, 0) - alloc0;
@@ -96,7 +98,6 @@ public final class CascadeSentinelV2Player extends AbstractList<IEquipment> impl
         bonus2 = lane(packedTotal, 24) - alloc2;
         bonus3 = lane(packedTotal, 36) - alloc3;
         bonus4 = lane(packedTotal, 48) - alloc4;
-        weight = bonus0 + bonus1 + bonus2 + bonus3 + bonus4;
     }
     static long pack5(int a,int b,int c,int d,int e) {
         return (long)(a + PACK_BIAS)
@@ -185,7 +186,7 @@ public final class CascadeSentinelV2Player extends AbstractList<IEquipment> impl
         }
     }
 
-    public static final class Builder implements IPlayerBuilder<CascadeSentinelV2Player> {
+    public static final class Builder implements IPlayerBuilder<CascadeSentinelV3Player> {
         private final Data data = new Data();
         private int itemCount, candidateCount, freeCount, freeScore;
         private int free0, free1, free2, free3, free4;
@@ -195,54 +196,57 @@ public final class CascadeSentinelV2Player extends AbstractList<IEquipment> impl
         private int neg0,neg1,neg2,neg3,neg4,pos0,pos1,pos2,pos3,pos4;
         private boolean packedValuesSafe = true;
 
-        @Override public IPlayerBuilder<CascadeSentinelV2Player> equipment(IEquipment... additions) {
+        @Override public IPlayerBuilder<CascadeSentinelV3Player> equipment(IEquipment... additions) {
             for (IEquipment item : additions) {
-                data.ensureItemCapacity(itemCount + 1);
-                data.items[itemCount] = item;
-                int[] req = item.requirements();
-                int[] bon = item.bonuses();
-                int q0=req[0],q1=req[1],q2=req[2],q3=req[3],q4=req[4];
-                int x0=bon[0],x1=bon[1],x2=bon[2],x3=bon[3],x4=bon[4];
-                int w=x0+x1+x2+x3+x4;
-                boolean hasReq=q0>0||q1>0||q2>0||q3>0||q4>0;
-                boolean hasNeg=x0<0||x1<0||x2<0||x3<0||x4<0;
-                if (!hasReq && !hasNeg) {
-                    freeCount++; freeScore += w;
-                    free0+=x0;free1+=x1;free2+=x2;free3+=x3;free4+=x4;
-                    if (itemCount < 64) freeMask |= 1L << itemCount;
-                } else {
-                    data.ensureCandidateCapacity(candidateCount + 1);
-                    int j=candidateCount++;
-                    data.originalIndex[j]=itemCount;
-                    data.weight[j]=w;
-                    data.packedReq[j]=packRequirements(q0,q1,q2,q3,q4);
-                    data.packedBonus[j]=pack5(x0,x1,x2,x3,x4);
-                    data.packedNeed[j]=packNeeds(q0,q1,q2,q3,q4,x0,x1,x2,x3,x4);
-                    boolean candidatePackable = inPackRange(x0)&&inPackRange(x1)&&inPackRange(x2)&&inPackRange(x3)&&inPackRange(x4)
-                            && needPackable(q0,x0)&&needPackable(q1,x1)&&needPackable(q2,x2)&&needPackable(q3,x3)&&needPackable(q4,x4);
-                    packedValuesSafe &= candidatePackable;
-                    if (data.hardened != null) {
-                        data.hardened.set(j,q0,q1,q2,q3,q4,x0,x1,x2,x3,x4);
-                    } else if (!packedValuesSafe || candidateCount > 9) {
-                        // Prepare the exact scalar sidecar during builder work, never lazily in run().
-                        data.ensureHardenedData(candidateCount);
-                    }
-                    neg0+=Math.min(0,x0);neg1+=Math.min(0,x1);neg2+=Math.min(0,x2);neg3+=Math.min(0,x3);neg4+=Math.min(0,x4);
-                    pos0+=Math.max(0,x0);pos1+=Math.max(0,x1);pos2+=Math.max(0,x2);pos3+=Math.max(0,x3);pos4+=Math.max(0,x4);
-                    anyNegative |= hasNeg;
-                }
-                itemCount++;
+                addOne(item);
             }
             return this;
         }
-        @Override public IPlayerBuilder<CascadeSentinelV2Player> allocate(SkillPoint point, int amount) {
+        private void addOne(IEquipment item) {
+            data.ensureItemCapacity(itemCount + 1);
+            data.items[itemCount] = item;
+            int[] req = item.requirements();
+            int[] bon = item.bonuses();
+            int q0=req[0],q1=req[1],q2=req[2],q3=req[3],q4=req[4];
+            int x0=bon[0],x1=bon[1],x2=bon[2],x3=bon[3],x4=bon[4];
+            int w=x0+x1+x2+x3+x4;
+            boolean hasReq=q0>0||q1>0||q2>0||q3>0||q4>0;
+            boolean hasNeg=x0<0||x1<0||x2<0||x3<0||x4<0;
+            if (!hasReq && !hasNeg) {
+                freeCount++; freeScore += w;
+                free0+=x0;free1+=x1;free2+=x2;free3+=x3;free4+=x4;
+                if (itemCount < 64) freeMask |= 1L << itemCount;
+            } else {
+                data.ensureCandidateCapacity(candidateCount + 1);
+                int j=candidateCount++;
+                data.originalIndex[j]=itemCount;
+                data.weight[j]=w;
+                data.packedReq[j]=packRequirements(q0,q1,q2,q3,q4);
+                data.packedBonus[j]=pack5(x0,x1,x2,x3,x4);
+                data.packedNeed[j]=packNeeds(q0,q1,q2,q3,q4,x0,x1,x2,x3,x4);
+                boolean candidatePackable = inPackRange(x0)&&inPackRange(x1)&&inPackRange(x2)&&inPackRange(x3)&&inPackRange(x4)
+                        && needPackable(q0,x0)&&needPackable(q1,x1)&&needPackable(q2,x2)&&needPackable(q3,x3)&&needPackable(q4,x4);
+                packedValuesSafe &= candidatePackable;
+                if (data.hardened != null) {
+                    data.hardened.set(j,q0,q1,q2,q3,q4,x0,x1,x2,x3,x4);
+                } else if (!packedValuesSafe || candidateCount > 9) {
+                    // Prepare the exact scalar sidecar during builder work, never lazily in run().
+                    data.ensureHardenedData(candidateCount);
+                }
+                neg0+=Math.min(0,x0);neg1+=Math.min(0,x1);neg2+=Math.min(0,x2);neg3+=Math.min(0,x3);neg4+=Math.min(0,x4);
+                pos0+=Math.max(0,x0);pos1+=Math.max(0,x1);pos2+=Math.max(0,x2);pos3+=Math.max(0,x3);pos4+=Math.max(0,x4);
+                anyNegative |= hasNeg;
+            }
+            itemCount++;
+        }
+        @Override public IPlayerBuilder<CascadeSentinelV3Player> allocate(SkillPoint point, int amount) {
             switch (point) {
                 case STRENGTH -> a0=amount; case DEXTERITY -> a1=amount; case INTELLIGENCE -> a2=amount;
                 case DEFENCE -> a3=amount; case AGILITY -> a4=amount;
             }
             return this;
         }
-        @Override public CascadeSentinelV2Player build() {
+        @Override public CascadeSentinelV3Player build() {
             int base0=a0+free0,base1=a1+free1,base2=a2+free2,base3=a3+free3,base4=a4+free4;
             boolean safe=packedValuesSafe
                 && rangeSafe(base0,neg0,pos0)&&rangeSafe(base1,neg1,pos1)&&rangeSafe(base2,neg2,pos2)
@@ -289,8 +293,8 @@ public final class CascadeSentinelV2Player extends AbstractList<IEquipment> impl
                 snapshotHardened = new HardenedSnapshot(
                         freeCount, freeScore, free0, free1, free2, free3, free4);
             }
-            return new CascadeSentinelV2Player(data,itemCount,candidateCount,snapshotHardened,
-                    freeMask,anyNegative,safe,denseNineRisk,packedBase,a0,a1,a2,a3,a4);
+            return new CascadeSentinelV3Player(data,itemCount,candidateCount,snapshotHardened,
+                    freeMask,anyNegative,packedBase,a0,a1,a2,a3,a4);
         }
         private static boolean inPackRange(int v){return v>=-PACK_BIAS && v<PACK_BIAS;}
         private static boolean needPackable(int r,int b){return r<=0 || (inPackRange(r)&&inPackRange(r+b));}

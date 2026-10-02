@@ -4,8 +4,8 @@ package com.wynncraft;
 import com.wynncraft.algorithms.NegativeOrderAlgorithm;
 import com.wynncraft.algorithms.CapyTopoAlgorithm;
 import com.wynncraft.algorithms.CascadeBoundChecker;
-import com.wynncraft.algorithms.CascadeSentinelV2Algorithm;
-import com.wynncraft.algorithms.CascadeSentinelV2Player;
+import com.wynncraft.algorithms.CascadeSentinelV3Algorithm;
+import com.wynncraft.algorithms.CascadeSentinelV3Player;
 import com.wynncraft.algorithms.GreedyAlgorithm;
 import com.wynncraft.algorithms.MyFirstAlgorithm;
 import com.wynncraft.algorithms.MySecondAlgorithm;
@@ -58,7 +58,7 @@ public class AlgorithmRegistry {
         register(new PrunedMaskAlgorithm(), WynnPlayer.Builder::new);
         register(new PrunedMaskV2Algorithm(), WynnPlayer.Builder::new);
         register(new StarvingGoblinAlgorithm(), StarvingPlayer.Builder::new);
-        register(new CascadeSentinelV2Algorithm(), CascadeSentinelV2Player.Builder::new);
+        register(new CascadeSentinelV3Algorithm(), CascadeSentinelV3Player.Builder::new);
     }
 
     /**

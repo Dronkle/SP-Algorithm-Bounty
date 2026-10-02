@@ -11,22 +11,24 @@ import java.util.List;
 /**
  * Exact adaptive skill-point solver.
  *
- * <p>Small pack-safe candidate sets use a compact subset-state engine. Larger,
- * unusual, or numerically unsafe inputs delegate to the internal hardened exact
- * search engine. A builder-precomputed dense-nine risk flag also
- * routes the rare case where all nine candidates are initially equipable but
- * the full set violates a final cascade threshold to the hardened path, because
- * that shape can saturate the packed 512-state search. The detector performs no
- * timing or search and is not a result cache.</p>
+ * <p>Pack-safe snapshots with at most nine candidates use specialized common
+ * paths: systems with no negative candidate bonus use monotone closure, while
+ * snapshots containing any negative candidate bonus first attempt a constructive
+ * full-set certificate. Only unresolved negative-containing cases enter the
+ * compact 512-state exact subset engine.</p>
+ *
+ * <p>Inputs outside the fast domain, plus snapshots that Builder marks as
+ * numerically unsafe or dense-nine, route to hardened exact solvers. Builder
+ * preprocessing performs no reachability search and stores no solved result.</p>
  */
-@Information(name = "Cascade Sentinel", version = 2, authors = {"Luuk"})
-public final class CascadeSentinelV2Algorithm implements IAlgorithm<CascadeSentinelV2Player> {
+@Information(name = "Cascade Sentinel", version = 3, authors = {"Luuk"})
+public final class CascadeSentinelV3Algorithm implements IAlgorithm<CascadeSentinelV3Player> {
     private static final int FAST_BITS = 9;
     private static final int FAST_STATES = 1 << FAST_BITS;
     private static final long LANE_GUARDS = 0x0800_8008_0080_0800L;
 
-    private final CascadeSentinelV2SmallHardenedSolver smallHardened = new CascadeSentinelV2SmallHardenedSolver();
-    private final CascadeSentinelV2LargeHardenedSolver largeHardened = new CascadeSentinelV2LargeHardenedSolver();
+    private final CascadeSentinelV3SmallHardenedSolver smallHardened = new CascadeSentinelV3SmallHardenedSolver();
+    private final CascadeSentinelV3LargeHardenedSolver largeHardened = new CascadeSentinelV3LargeHardenedSolver();
     private final int[] reachedGeneration = new int[FAST_STATES];
     private final long[] stateTotal = new long[FAST_STATES];
     private final long[] stateThreshold = new long[FAST_STATES];
@@ -34,73 +36,74 @@ public final class CascadeSentinelV2Algorithm implements IAlgorithm<CascadeSenti
     private int generation;
 
     @Override
-    public Result run(CascadeSentinelV2Player player) {
-        final int k = player.candidateCount;
-        if (player.itemCount > 64 || !player.packedSafe || k > FAST_BITS || player.denseNineRisk) {
-            if (player.itemCount > 64 || k > FAST_BITS) return largeHardened.run(player);
-            return smallHardened.run(player);
-        }
+    public Result run(CascadeSentinelV3Player player) {
+        final int k = player.candidateCount();
+        if (player.itemCount > 64 || k > FAST_BITS) return largeHardened.run(player);
+        // Within the <=64 / <=9 fast domain, build() materializes this snapshot
+        // only for numerically unsafe or dense-nine cases. The nullable reference
+        // itself is the hardened-dispatch state; separate booleans are redundant.
+        if (player.hardenedSnapshot != null) return smallHardened.run(player);
 
         if (k == 0) {
             player.setPackedTotal(player.basePacked);
             return new Result(player, Collections.emptyList());
         }
 
-        final CascadeSentinelV2Player.Data d = player.data;
+        final CascadeSentinelV3Player.Data d = player.data;
         final int fullMask = (1 << k) - 1;
 
         // Positive-only systems are monotone: the closure is the unique maximum
         // reachable set, so no subset search is needed.
-        if (!player.anyNegative) {
+        if (!player.anyNegative()) {
             int active = 0;
             int remaining = fullMask;
             long total = player.basePacked;
             boolean progress;
             do {
                 progress = false;
-                if ((remaining & 1) != 0 && ge5(total, d.packedReq[0])) {
-                    active |= 1; remaining ^= 1;
-                    total += d.packedBonus[0] - CascadeSentinelV2Player.PACK_BIAS_5;
-                    progress = true;
-                }
-                if ((remaining & 2) != 0 && ge5(total, d.packedReq[1])) {
-                    active |= 2; remaining ^= 2;
-                    total += d.packedBonus[1] - CascadeSentinelV2Player.PACK_BIAS_5;
-                    progress = true;
-                }
-                if ((remaining & 4) != 0 && ge5(total, d.packedReq[2])) {
-                    active |= 4; remaining ^= 4;
-                    total += d.packedBonus[2] - CascadeSentinelV2Player.PACK_BIAS_5;
-                    progress = true;
-                }
-                if ((remaining & 8) != 0 && ge5(total, d.packedReq[3])) {
-                    active |= 8; remaining ^= 8;
-                    total += d.packedBonus[3] - CascadeSentinelV2Player.PACK_BIAS_5;
-                    progress = true;
-                }
-                if ((remaining & 16) != 0 && ge5(total, d.packedReq[4])) {
-                    active |= 16; remaining ^= 16;
-                    total += d.packedBonus[4] - CascadeSentinelV2Player.PACK_BIAS_5;
-                    progress = true;
-                }
-                if ((remaining & 32) != 0 && ge5(total, d.packedReq[5])) {
-                    active |= 32; remaining ^= 32;
-                    total += d.packedBonus[5] - CascadeSentinelV2Player.PACK_BIAS_5;
-                    progress = true;
-                }
-                if ((remaining & 64) != 0 && ge5(total, d.packedReq[6])) {
-                    active |= 64; remaining ^= 64;
-                    total += d.packedBonus[6] - CascadeSentinelV2Player.PACK_BIAS_5;
+                if ((remaining & 256) != 0 && ge5(total, d.packedReq[8])) {
+                    active |= 256; remaining ^= 256;
+                    total += d.packedBonus[8] - CascadeSentinelV3Player.PACK_BIAS_5;
                     progress = true;
                 }
                 if ((remaining & 128) != 0 && ge5(total, d.packedReq[7])) {
                     active |= 128; remaining ^= 128;
-                    total += d.packedBonus[7] - CascadeSentinelV2Player.PACK_BIAS_5;
+                    total += d.packedBonus[7] - CascadeSentinelV3Player.PACK_BIAS_5;
                     progress = true;
                 }
-                if ((remaining & 256) != 0 && ge5(total, d.packedReq[8])) {
-                    active |= 256; remaining ^= 256;
-                    total += d.packedBonus[8] - CascadeSentinelV2Player.PACK_BIAS_5;
+                if ((remaining & 64) != 0 && ge5(total, d.packedReq[6])) {
+                    active |= 64; remaining ^= 64;
+                    total += d.packedBonus[6] - CascadeSentinelV3Player.PACK_BIAS_5;
+                    progress = true;
+                }
+                if ((remaining & 32) != 0 && ge5(total, d.packedReq[5])) {
+                    active |= 32; remaining ^= 32;
+                    total += d.packedBonus[5] - CascadeSentinelV3Player.PACK_BIAS_5;
+                    progress = true;
+                }
+                if ((remaining & 16) != 0 && ge5(total, d.packedReq[4])) {
+                    active |= 16; remaining ^= 16;
+                    total += d.packedBonus[4] - CascadeSentinelV3Player.PACK_BIAS_5;
+                    progress = true;
+                }
+                if ((remaining & 8) != 0 && ge5(total, d.packedReq[3])) {
+                    active |= 8; remaining ^= 8;
+                    total += d.packedBonus[3] - CascadeSentinelV3Player.PACK_BIAS_5;
+                    progress = true;
+                }
+                if ((remaining & 4) != 0 && ge5(total, d.packedReq[2])) {
+                    active |= 4; remaining ^= 4;
+                    total += d.packedBonus[2] - CascadeSentinelV3Player.PACK_BIAS_5;
+                    progress = true;
+                }
+                if ((remaining & 2) != 0 && ge5(total, d.packedReq[1])) {
+                    active |= 2; remaining ^= 2;
+                    total += d.packedBonus[1] - CascadeSentinelV3Player.PACK_BIAS_5;
+                    progress = true;
+                }
+                if ((remaining & 1) != 0 && ge5(total, d.packedReq[0])) {
+                    active |= 1; remaining ^= 1;
+                    total += d.packedBonus[0] - CascadeSentinelV3Player.PACK_BIAS_5;
                     progress = true;
                 }
             } while (progress && remaining != 0);
@@ -113,7 +116,6 @@ public final class CascadeSentinelV2Algorithm implements IAlgorithm<CascadeSenti
         // is immediate and we avoid the exact state table entirely.
         int greedyMask = 0;
         int remaining = fullMask;
-        int greedyWeight = 0;
         long greedyTotal = player.basePacked;
         long greedyThreshold = 0L;
         boolean progress;
@@ -122,12 +124,11 @@ public final class CascadeSentinelV2Algorithm implements IAlgorithm<CascadeSenti
             for (int bits = remaining; bits != 0; bits &= bits - 1) {
                 int i = Integer.numberOfTrailingZeros(bits);
                 if (!ge5(greedyTotal, d.packedReq[i])) continue;
-                long nextTotal = greedyTotal + d.packedBonus[i] - CascadeSentinelV2Player.PACK_BIAS_5;
+                long nextTotal = greedyTotal + d.packedBonus[i] - CascadeSentinelV3Player.PACK_BIAS_5;
                 if (!ge5(nextTotal, greedyThreshold)) continue;
                 int bit = 1 << i;
                 greedyMask |= bit;
                 remaining ^= bit;
-                greedyWeight += d.weight[i];
                 greedyTotal = nextTotal;
                 greedyThreshold = max5(greedyThreshold, d.packedNeed[i]);
                 progress = true;
@@ -143,6 +144,11 @@ public final class CascadeSentinelV2Algorithm implements IAlgorithm<CascadeSenti
             // sequence can start. The unconditional free items are optimal.
             player.setPackedTotal(player.basePacked);
             return result(player, 0);
+        }
+
+        int greedyWeight = 0;
+        for (int bits = greedyMask; bits != 0; bits &= bits - 1) {
+            greedyWeight += d.weight[Integer.numberOfTrailingZeros(bits)];
         }
 
         // Exact subset reachability for the small unresolved case.
@@ -170,7 +176,7 @@ public final class CascadeSentinelV2Algorithm implements IAlgorithm<CascadeSenti
             for (int bits = absent; bits != 0; bits &= bits - 1) {
                 int i = Integer.numberOfTrailingZeros(bits);
                 if (!ge5(total, d.packedReq[i])) continue;
-                long nextTotal = total + d.packedBonus[i] - CascadeSentinelV2Player.PACK_BIAS_5;
+                long nextTotal = total + d.packedBonus[i] - CascadeSentinelV3Player.PACK_BIAS_5;
                 if (!ge5(nextTotal, threshold)) continue;
                 int nextMask = mask | (1 << i);
                 if (reachedGeneration[nextMask] == stamp) continue;
@@ -218,7 +224,7 @@ public final class CascadeSentinelV2Algorithm implements IAlgorithm<CascadeSenti
         return (a & select) | (b & ~select);
     }
 
-    private static Result result(CascadeSentinelV2Player player, int candidateMask) {
+    private static Result result(CascadeSentinelV3Player player, int candidateMask) {
         long selected = player.freeOriginalMask;
         for (int bits = candidateMask; bits != 0; bits &= bits - 1) {
             int candidate = Integer.numberOfTrailingZeros(bits);
